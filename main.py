@@ -43,8 +43,14 @@ def main() -> int:
 
     hook = PushToTalkHook(on_xbutton=app.on_xbutton,
                           on_escape=app.on_escape,
-                          watched=cfg.watched_buttons)
+                          watched=cfg.watched_buttons,
+                          suppress=cfg.suppress_trigger)
     hook.start()
+    if not hook.installed.wait(timeout=5) or hook.install_error:
+        # Never fail silently: with pythonw there is no console, so
+        # surface a dead hook on the overlay as well as stderr.
+        print(f"hook install failed: {hook.install_error}", file=sys.stderr)
+        overlay.show_result("⚠ ボタンのフックを登録できませんでした", 3.0)
 
     _start_tray(root, app)
     root.mainloop()

@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import ctypes
+import queue
 import sys
 import threading
 import time
@@ -80,8 +81,66 @@ class INPUT(ctypes.Structure):
     _fields_ = [("type", wintypes.DWORD), ("u", _INPUTUNION)]
 
 
+def _declare_signatures(user32, kernel32) -> None:
+    """Pointer-sized restype/argtypes for every Win32 call we make.
+
+    ctypes defaults (int restype, int argument conversion) silently
+    truncate 64-bit handles and pointers.  A truncated GlobalLock
+    pointer dereferenced by c_wchar_p/memmove is an access violation
+    inside _ctypes — it killed the whole app mid-dictation on
+    2026-11-09, so EVERY call used here is declared, no exceptions.
+    """
+    kernel32.GetModuleHandleW.restype = wintypes.HMODULE
+    kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+    kernel32.GlobalAlloc.restype = ctypes.c_void_p
+    kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+    kernel32.GlobalUnlock.restype = wintypes.BOOL
+    kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+
+    user32.GetCursorPos.restype = wintypes.BOOL
+    user32.GetCursorPos.argtypes = [ctypes.POINTER(POINT)]
+    user32.WindowFromPoint.restype = wintypes.HWND
+    user32.WindowFromPoint.argtypes = [POINT]
+    user32.GetAncestor.restype = wintypes.HWND
+    user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.GetForegroundWindow.argtypes = []
+    user32.SetForegroundWindow.restype = wintypes.BOOL
+    user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+    user32.OpenClipboard.restype = wintypes.BOOL
+    user32.OpenClipboard.argtypes = [wintypes.HWND]
+    user32.CloseClipboard.restype = wintypes.BOOL
+    user32.CloseClipboard.argtypes = []
+    user32.EmptyClipboard.restype = wintypes.BOOL
+    user32.EmptyClipboard.argtypes = []
+    user32.GetClipboardData.restype = wintypes.HANDLE
+    user32.GetClipboardData.argtypes = [wintypes.UINT]
+    user32.SetClipboardData.restype = wintypes.HANDLE
+    user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+    user32.SendInput.restype = wintypes.UINT
+    user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT),
+                                 ctypes.c_int]
+
+
+_USER32 = None
+_KERNEL32 = None
+
+
 def _user32():
-    return ctypes.windll.user32
+    global _USER32
+    if _USER32 is None:
+        _USER32 = ctypes.WinDLL("user32", use_last_error=True)
+        _declare_signatures(_USER32, _kernel32())
+    return _USER32
+
+
+def _kernel32():
+    global _KERNEL32
+    if _KERNEL32 is None:
+        _KERNEL32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    return _KERNEL32
 
 
 def get_cursor_pos() -> tuple[int, int]:
@@ -102,7 +161,7 @@ def window_root_at(x: int, y: int) -> int:
 
 # ---------------------------------------------------------------- clipboard
 def _clipboard_get_text() -> str | None:
-    user32, kernel32 = _user32(), ctypes.windll.kernel32
+    user32, kernel32 = _user32(), _kernel32()
     if not user32.OpenClipboard(None):
         return None
     try:
@@ -121,7 +180,7 @@ def _clipboard_get_text() -> str | None:
 
 
 def _clipboard_set_text(text: str) -> bool:
-    user32, kernel32 = _user32(), ctypes.windll.kernel32
+    user32, kernel32 = _user32(), _kernel32()
     if not user32.OpenClipboard(None):
         return False
     try:
@@ -206,26 +265,40 @@ def focus_and_paste(text: str, click_to_focus: bool = True,
 
 
 # ------------------------------------------------------------------- hooks
-HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_int, wintypes.WPARAM,
+# NOTE: LRESULT and HMODULE/HHOOK are pointer-sized on 64-bit Windows.
+# ctypes' default int restype silently TRUNCATES them — a truncated
+# module handle makes SetWindowsHookExW fail with ERROR_MOD_NOT_FOUND
+# (126) and the app then runs with no hooks at all (found live
+# 2026-11-09: tray visible, side button dead).  Always set restypes.
+HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, ctypes.c_int,
+                              wintypes.WPARAM,
                               wintypes.LPARAM) if IS_WIN else None
 
 
 class PushToTalkHook:
-    """Watches XButton down/up and Esc.  Callbacks receive plain events:
+    """Watches XButton down/up and Esc.
 
-    on_xbutton(button_id, pressed, x, y) -> return True to swallow the event
-    on_escape() -> None
+    The Win32 callbacks only enqueue events; on_xbutton(button, pressed,
+    x, y) and on_escape() run on a dispatcher thread (see _dispatch).
+    Whether the XButton event is swallowed is the static ``suppress``
+    flag — the app returns it for every path anyway.
     """
 
-    def __init__(self, on_xbutton, on_escape, watched: set[int]):
+    def __init__(self, on_xbutton, on_escape, watched: set[int],
+                 suppress: bool = True):
         self.on_xbutton = on_xbutton
         self.on_escape = on_escape
         self.watched = watched
+        self.suppress = suppress
         self._thread: threading.Thread | None = None
         self._mouse_hook = None
         self._kbd_hook = None
         self._mouse_proc = None
         self._kbd_proc = None
+        self.installed = threading.Event()
+        self.install_error: str | None = None
+        self.handler_error: str | None = None
+        self._queue: queue.Queue = queue.Queue()
 
     def start(self) -> None:
         if not IS_WIN:
@@ -233,22 +306,56 @@ class PushToTalkHook:
         self._thread = threading.Thread(target=self._run, daemon=True,
                                         name="ptt-hook")
         self._thread.start()
+        threading.Thread(target=self._dispatch, daemon=True,
+                         name="ptt-dispatch").start()
+
+    def _dispatch(self) -> None:
+        """Run the app's handlers off the hook callback.
+
+        Low-level hook callbacks must return within ~300 ms or Windows
+        silently unhooks; starting the recorder or a network stream
+        from inside the callback can exceed that.  Callbacks therefore
+        only enqueue (as this module's header has always promised), and
+        the real work happens here.
+        """
+        while True:
+            item = self._queue.get()
+            try:
+                if item[0] == "x":
+                    _, button, pressed, x, y = item
+                    self.on_xbutton(button, pressed, x, y)
+                else:
+                    self.on_escape()
+            except Exception as exc:  # a bad dictation must not kill input
+                self.handler_error = repr(exc)
 
     def _run(self) -> None:
-        user32 = _user32()
-        kernel32 = ctypes.windll.kernel32
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        # Both restype AND argtypes: without argtypes ctypes converts
+        # the 64-bit module handle through a C int and raises
+        # OverflowError before the call is even made.
+        kernel32.GetModuleHandleW.restype = wintypes.HMODULE
+        kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+        user32.SetWindowsHookExW.restype = wintypes.HHOOK
+        user32.SetWindowsHookExW.argtypes = [ctypes.c_int, HOOKPROC,
+                                             wintypes.HINSTANCE,
+                                             wintypes.DWORD]
+        user32.CallNextHookEx.restype = ctypes.c_ssize_t
+        user32.CallNextHookEx.argtypes = [wintypes.HHOOK, ctypes.c_int,
+                                          wintypes.WPARAM, wintypes.LPARAM]
 
         @HOOKPROC
         def mouse_proc(n_code, w_param, l_param):
-            swallow = False
             if n_code == HC_ACTION and w_param in (WM_XBUTTONDOWN, WM_XBUTTONUP):
                 info = ctypes.cast(l_param, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
                 button = (info.mouseData >> 16) & 0xFFFF
                 if button in self.watched:
-                    swallow = bool(self.on_xbutton(
-                        button, w_param == WM_XBUTTONDOWN, info.pt.x, info.pt.y))
-            if swallow:
-                return 1
+                    self._queue.put(("x", button,
+                                     w_param == WM_XBUTTONDOWN,
+                                     info.pt.x, info.pt.y))
+                    if self.suppress:
+                        return 1
             return user32.CallNextHookEx(self._mouse_hook, n_code, w_param, l_param)
 
         @HOOKPROC
@@ -256,14 +363,31 @@ class PushToTalkHook:
             if n_code == HC_ACTION and w_param == WM_KEYDOWN:
                 info = ctypes.cast(l_param, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
                 if info.vkCode == VK_ESCAPE:
-                    self.on_escape()
+                    self._queue.put(("esc",))
             return user32.CallNextHookEx(self._kbd_hook, n_code, w_param, l_param)
 
         self._mouse_proc = mouse_proc  # keep references alive
         self._kbd_proc = kbd_proc
-        module = kernel32.GetModuleHandleW(None)
-        self._mouse_hook = user32.SetWindowsHookExW(WH_MOUSE_LL, mouse_proc, module, 0)
-        self._kbd_hook = user32.SetWindowsHookExW(WH_KEYBOARD_LL, kbd_proc, module, 0)
+        try:
+            module = kernel32.GetModuleHandleW(None)
+            ctypes.set_last_error(0)
+            self._mouse_hook = user32.SetWindowsHookExW(
+                WH_MOUSE_LL, mouse_proc, module, 0)
+            mouse_err = ctypes.get_last_error()
+            ctypes.set_last_error(0)
+            self._kbd_hook = user32.SetWindowsHookExW(
+                WH_KEYBOARD_LL, kbd_proc, module, 0)
+            kbd_err = ctypes.get_last_error()
+            if not self._mouse_hook or not self._kbd_hook:
+                self.install_error = (
+                    f"SetWindowsHookExW failed (mouse={self._mouse_hook} "
+                    f"err={mouse_err}, kbd={self._kbd_hook} err={kbd_err})")
+        except Exception as exc:  # never leave main() waiting blind
+            self.install_error = f"hook install raised: {exc!r}"
+        finally:
+            self.installed.set()
+        if self.install_error:
+            return
         msg = wintypes.MSG()
         while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
             user32.TranslateMessage(ctypes.byref(msg))
