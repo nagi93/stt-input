@@ -36,7 +36,9 @@ class VoicePasteApp:
     def __init__(self, cfg: Config, overlay):
         self.cfg = cfg
         self.overlay = overlay
-        self.recorder = Recorder(on_chunk=self._on_chunk, device=cfg.mic_device)
+        self.recorder = Recorder(on_chunk=self._on_chunk,
+                                 device=cfg.mic_device,
+                                 device_name=cfg.mic_name)
         self._state = "idle"
         self._lock = threading.Lock()
         self._active_button: int | None = None

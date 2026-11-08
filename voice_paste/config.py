@@ -64,6 +64,10 @@ class Config:
     polish_api_key_env: str = "VOICE_PASTE_LLM_KEY"
 
     mic_device: int | None = None
+    # Preferred microphone by name substring (e.g. "AG06").  Device
+    # indices are unstable across processes, so a name survives where a
+    # stored number does not.  mic_device (int) wins when both are set.
+    mic_name: str = ""
 
     @property
     def watched_buttons(self) -> set[int]:

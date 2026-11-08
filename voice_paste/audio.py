@@ -15,10 +15,33 @@ SAMPLE_RATE = 16000
 BLOCK_SAMPLES = 3200  # 200 ms
 
 
+def find_input_device(name_part: str) -> int | None:
+    """Index of an input device whose name contains ``name_part``.
+
+    PortAudio indices are NOT stable across processes (re-enumeration
+    can reorder them — observed live on siniku, where the same AG06
+    moved between indices minutes apart), so a stored integer rots.
+    WASAPI is preferred for low latency.  Returns None when no match.
+    """
+    import sounddevice as sd
+
+    matches = []
+    for idx, dev in enumerate(sd.query_devices()):
+        if dev["max_input_channels"] > 0 and name_part in dev["name"]:
+            hostapi = sd.query_hostapis(dev["hostapi"])["name"]
+            matches.append((0 if "WASAPI" in hostapi else 1, idx))
+    if not matches:
+        return None
+    matches.sort()
+    return matches[0][1]
+
+
 class Recorder:
-    def __init__(self, on_chunk=None, device: int | None = None):
+    def __init__(self, on_chunk=None, device: int | None = None,
+                 device_name: str = ""):
         self.on_chunk = on_chunk
         self.device = device
+        self.device_name = device_name
         self._chunks: list[bytes] = []
         self._lock = threading.Lock()
         self._stream = None
@@ -27,6 +50,13 @@ class Recorder:
     @property
     def recording(self) -> bool:
         return self._stream is not None
+
+    def _resolve_device(self) -> int | None:
+        if self.device is not None:
+            return self.device
+        if self.device_name:
+            return find_input_device(self.device_name)
+        return None
 
     def start(self) -> None:
         import sounddevice as sd  # imported lazily: not needed for tests
@@ -48,7 +78,8 @@ class Recorder:
 
         self._stream = sd.InputStream(
             samplerate=SAMPLE_RATE, channels=1, dtype="int16",
-            blocksize=BLOCK_SAMPLES, device=self.device, callback=callback)
+            blocksize=BLOCK_SAMPLES, device=self._resolve_device(),
+            callback=callback)
         self._stream.start()
 
     def stop(self) -> bytes:

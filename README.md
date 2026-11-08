@@ -75,7 +75,8 @@ Windows 常駐のプッシュ・トゥ・トーク音声入力。**マウスの�
 | `max_seconds` | `120` | 録音上限 |
 | `click_to_focus` | `true` | 離した位置のウィンドウをクリックしてから貼る |
 | `restore_clipboard` | `true` | 貼り付け後に元のクリップボードを復元 |
-| `mic_device` | `null` | マイクのデバイス番号（sounddevice の index）。null は既定マイク |
+| `mic_name` | `""` | 使うマイクの名前の一部（例 `"AG06"`）。録音開始ごとに名前で引き直すので index の変動に強い |
+| `mic_device` | `null` | マイクのデバイス番号（sounddevice の index）。指定時は `mic_name` より優先。index は再起動等で変わることがある |
 
 ### 既定エンジン: Haas サーバー（siniku）+ ローカル予備
 
