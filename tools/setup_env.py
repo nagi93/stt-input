@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """Environment-adaptive setup for stt-input.
 
-Detects this PC's hardware, selects the faster-whisper model that fits
-(see voice_paste/env_detect.py for the tier table), installs the CUDA
-runtime libraries when an NVIDIA GPU tier was chosen, writes the choice
-into config.json (preserving any other settings), and pre-downloads the
-model so the first dictation is not spent waiting.
+Probes the Haas STT server: when it answers (siniku), the app default
+engine is "haas" with the local model as fallback; on PCs without the
+server the default is "local".  Either way, this PC's hardware selects
+the faster-whisper tier (see voice_paste/env_detect.py), the CUDA
+runtime libraries are installed when an NVIDIA GPU tier was chosen, the
+choices are written into config.json (preserving other settings), and
+the local model is pre-downloaded so the first dictation — or the first
+fallback — is not spent waiting.
 
 Usage:  python tools/setup_env.py [--no-download]
 """
@@ -14,6 +17,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parent.parent
@@ -22,6 +26,16 @@ sys.path.insert(0, str(APP_DIR))
 from voice_paste.env_detect import detect, select_model  # noqa: E402
 
 CUDA_PACKAGES = ["nvidia-cublas-cu12", "nvidia-cudnn-cu12"]
+DEFAULT_STT_URL = "http://127.0.0.1:8790"
+
+
+def haas_reachable(url: str, timeout: float = 3.0) -> bool:
+    try:
+        with urllib.request.urlopen(url.rstrip("/") + "/health",
+                                    timeout=timeout) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
 
 
 def main() -> int:
@@ -51,8 +65,13 @@ def main() -> int:
             config = json.loads(config_path.read_text(encoding="utf-8"))
         except ValueError:
             config = {}
+    stt_url = config.get("stt_url", DEFAULT_STT_URL)
+    engine = "haas" if haas_reachable(stt_url) else "local"
+    print(f"Haasサーバー ({stt_url}): "
+          + ("応答あり → 既定エンジン=haas (ローカルは予備)"
+             if engine == "haas" else "応答なし → 既定エンジン=local"))
     config.update({
-        "engine": "local",
+        "engine": engine,
         "whisper_model": choice.model,
         "whisper_device": choice.device,
         "whisper_compute": choice.compute_type,
@@ -60,7 +79,7 @@ def main() -> int:
     config_path.write_text(
         json.dumps(config, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8")
-    print(f"config.json に書き込みました: model={choice.model} "
+    print(f"config.json に書き込みました: engine={engine} model={choice.model} "
           f"device={choice.device} compute={choice.compute_type}")
 
     if download:

@@ -48,27 +48,45 @@ class VoicePasteApp:
         self.stream: StreamClient | None = None
         self._streaming_live = False
         self._agreement = LocalAgreement()
+        self._haas_up = True
+        self._session_local = False
+        self._used_fallback = False
 
-        if cfg.engine == "local":
+        if cfg.engine == "local" or cfg.fallback_to_local:
             model, device, compute = cfg.resolved_model()
             self.local = LocalEngine(model, device, compute,
                                      Path(APP_DIR) / "models")
-            self.local.warm_async()  # load while the user looks at the screen
-        else:
+            if cfg.engine == "local":
+                self.local.warm_async()  # load while the user looks at the screen
+        if cfg.engine == "haas":
             self.batch = SttClient(cfg.stt_url, cfg.stt_transport)
             if cfg.streaming:
                 self.stream = StreamClient(cfg.stt_url)
                 threading.Thread(target=self.stream.ensure_connected,
                                  daemon=True).start()
+            threading.Thread(target=self._haas_monitor, daemon=True,
+                             name="haas-monitor").start()
+
+    def _haas_monitor(self) -> None:
+        """Track Haas server health; pre-load the local model if it drops."""
+        while True:
+            up = bool(self.batch and self.batch.health())
+            if self._haas_up and not up and self.local is not None:
+                self.local.warm_async()  # be ready to take over
+            self._haas_up = up
+            time.sleep(10)
 
     def describe_engine(self) -> str:
-        if self.local is not None:
+        if self.cfg.engine == "local" and self.local is not None:
             where = self.local.device
             if self.local.fell_back_to_cpu:
                 where = "cpu (cuda fallback)"
             return f"ローカル認識: {self.local.model_name} / {where}"
-        return "Haasサーバー: " + ("接続OK" if self.batch and self.batch.health()
-                                  else "応答なし")
+        state = "接続OK" if self._haas_up else "応答なし（ローカルで動作）"
+        text = f"Haas優先: {state}"
+        if self.local is not None:
+            text += f" / 予備 {self.local.model_name}"
+        return text
 
     # -- hook callbacks (must be fast) ------------------------------------
     def on_xbutton(self, button: int, pressed: bool, x: int, y: int) -> bool:
@@ -97,7 +115,12 @@ class VoicePasteApp:
             self._pressed_at = time.monotonic()
             self._cancelled = False
             self._streaming_live = False
-        if self.stream is not None:
+            self._used_fallback = False
+            # Per-session engine: local when configured local-only, or
+            # when the Haas server is currently down (fallback).
+            self._session_local = self.local is not None and (
+                self.cfg.engine == "local" or not self._haas_up)
+        if not self._session_local and self.stream is not None:
             self._streaming_live = self.stream.start(self._on_partial)
         try:
             self.recorder.start()
@@ -110,7 +133,7 @@ class VoicePasteApp:
             return self.cfg.suppress_trigger
         self.overlay.show_recording()
         threading.Thread(target=self._watchdog, daemon=True).start()
-        if self.local is not None:
+        if self._session_local:
             self._agreement.reset()
             threading.Thread(target=self._partial_loop, daemon=True).start()
         return self.cfg.suppress_trigger
@@ -167,7 +190,7 @@ class VoicePasteApp:
         self.overlay.update_partial(committed, pending)
 
     def _transcribe(self, pcm: bytes) -> str:
-        if self.local is not None:
+        if self._session_local:
             return self.local.transcribe_pcm(pcm)
         raw = ""
         if self._streaming_live and self.stream is not None:
@@ -176,7 +199,14 @@ class VoicePasteApp:
             except SttError:
                 raw = ""
         if not raw:
-            raw = self.batch.transcribe_pcm(pcm)
+            try:
+                raw = self.batch.transcribe_pcm(pcm)
+            except SttError:
+                if self.local is None:
+                    raise
+                # Last resort: the server died mid-session.
+                self._used_fallback = True
+                return self.local.transcribe_pcm(pcm)
         return raw
 
     def _finish(self, held_ms: float) -> None:
@@ -196,7 +226,7 @@ class VoicePasteApp:
             try:
                 raw = self._transcribe(pcm)
             except (SttError, LocalSttError):
-                if self.local is not None:
+                if self._session_local:
                     self.overlay.show_result("⚠ 認識エンジンでエラーが発生しました", 1.4)
                 else:
                     self.overlay.show_result("⚠ STTサーバーに接続できません", 1.4)
@@ -217,7 +247,11 @@ class VoicePasteApp:
                                      self.cfg.polish_api_key_env)
             focus_and_paste(text, click_to_focus=self.cfg.click_to_focus,
                             restore_clipboard=self.cfg.restore_clipboard)
-            self.overlay.show_result("✓ 入力しました", 0.8)
+            note = ""
+            if self.cfg.engine == "haas" and (self._session_local
+                                              or self._used_fallback):
+                note = "（ローカル認識）"
+            self.overlay.show_result("✓ 入力しました" + note, 0.8)
         finally:
             with self._lock:
                 self._state = "idle"

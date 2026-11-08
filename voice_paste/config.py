@@ -25,9 +25,16 @@ class Config:
     min_press_ms: int = 350
     max_seconds: float = 120.0
 
-    # Recognition engine: "local" (faster-whisper on this PC, no WSL —
-    # the default) or "haas" (the existing WSL Haas-ja server on siniku).
-    engine: str = "local"
+    # Recognition engine: "haas" (the existing WSL Haas-ja server on
+    # siniku — the default when that server exists) or "local"
+    # (faster-whisper on this PC, no WSL).  The installer writes "haas"
+    # when the server answers at install time, "local" otherwise.
+    engine: str = "haas"
+    # With engine="haas", fall back to the local engine when the server
+    # is down (decided per session by a background health monitor, and
+    # again as a last resort if the server path errors).  The overlay
+    # notes when a dictation was recognised locally.
+    fallback_to_local: bool = True
     # Local engine model. "auto" = chosen from the detected hardware at
     # first run (see env_detect); the installer writes concrete values.
     whisper_model: str = "auto"
