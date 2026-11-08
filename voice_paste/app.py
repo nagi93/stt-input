@@ -3,13 +3,14 @@
 State machine:  IDLE -> RECORDING -> PROCESSING -> IDLE
 
 Engines:
-* ``local`` (default): faster-whisper runs on this PC — no WSL, no
-  server.  While recording, a partial thread re-transcribes the audio
-  captured so far about once a second and shows it in the overlay
+* ``haas`` (default when the server exists): the WSL Haas-ja + RE-USE
+  server on siniku (WebSocket streaming + batch fallback).  A health
+  monitor switches sessions to the local engine while it is down.
+* ``local``: faster-whisper runs on this PC — no WSL, no server.
+  While recording, a partial thread re-transcribes the audio captured
+  so far about once a second and shows it in the overlay
   (LocalAgreement-stabilised); on release the full recording is
   transcribed once more at full quality.
-* ``haas``: the existing WSL Haas-ja + RE-USE server on siniku
-  (WebSocket streaming + batch fallback), kept as an option.
 
 * XButton down (hook thread): start recording.  Fast operations only —
   the hook callback must return immediately.
@@ -54,6 +55,16 @@ class VoicePasteApp:
         self._session_local = False
         self._used_fallback = False
 
+        self._build_engine()
+        threading.Thread(target=self._haas_monitor, daemon=True,
+                         name="haas-monitor").start()
+
+    def _build_engine(self) -> None:
+        """(Re)create the engine clients from the current config."""
+        cfg = self.cfg
+        self.local = None
+        self.batch = None
+        self.stream = None
         if cfg.engine == "local" or cfg.fallback_to_local:
             model, device, compute = cfg.resolved_model()
             self.local = LocalEngine(model, device, compute,
@@ -66,13 +77,36 @@ class VoicePasteApp:
                 self.stream = StreamClient(cfg.stt_url)
                 threading.Thread(target=self.stream.ensure_connected,
                                  daemon=True).start()
-            threading.Thread(target=self._haas_monitor, daemon=True,
-                             name="haas-monitor").start()
+        self._haas_up = True
+
+    def rebuild_engine(self) -> bool:
+        """Apply engine-related settings without restarting the app.
+
+        Refused while a dictation is in progress (returns False).
+        """
+        with self._lock:
+            if self._state != "idle":
+                return False
+        if self.stream is not None:
+            try:
+                self.stream.abort()
+            except Exception:
+                pass
+        self._build_engine()
+        return True
+
+    def is_busy(self) -> bool:
+        with self._lock:
+            return self._state != "idle"
 
     def _haas_monitor(self) -> None:
         """Track Haas server health; pre-load the local model if it drops."""
         while True:
-            up = bool(self.batch and self.batch.health())
+            if self.cfg.engine != "haas" or self.batch is None:
+                self._haas_up = True
+                time.sleep(10)
+                continue
+            up = bool(self.batch.health())
             if self._haas_up and not up and self.local is not None:
                 self.local.warm_async()  # be ready to take over
             self._haas_up = up

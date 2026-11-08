@@ -15,6 +15,19 @@ SAMPLE_RATE = 16000
 BLOCK_SAMPLES = 3200  # 200 ms
 
 
+def input_device_names() -> list[str]:
+    """Unique names of available input devices (for settings pickers)."""
+    try:
+        import sounddevice as sd
+    except Exception:
+        return []
+    names: list[str] = []
+    for dev in sd.query_devices():
+        if dev["max_input_channels"] > 0 and dev["name"] not in names:
+            names.append(dev["name"])
+    return names
+
+
 def find_input_device(name_part: str) -> int | None:
     """Index of an input device whose name contains ``name_part``.
 

@@ -101,3 +101,12 @@ def load_config(path: Path | None = None) -> Config:
         if key in known:
             setattr(cfg, key, value)
     return cfg
+
+
+def save_config(cfg: Config, path: Path | None = None) -> None:
+    """Persist the full config (used by the tray settings menu)."""
+    path = path or DEFAULT_CONFIG_PATH
+    Path(path).write_text(
+        json.dumps(asdict(cfg), ensure_ascii=False, indent=2,
+                   sort_keys=True) + "\n",
+        encoding="utf-8")
