@@ -1,0 +1,224 @@
+"""Push-to-talk orchestration.
+
+State machine:  IDLE -> RECORDING -> PROCESSING -> IDLE
+
+Engines:
+* ``local`` (default): faster-whisper runs on this PC — no WSL, no
+  server.  While recording, a partial thread re-transcribes the audio
+  captured so far about once a second and shows it in the overlay
+  (LocalAgreement-stabilised); on release the full recording is
+  transcribed once more at full quality.
+* ``haas``: the existing WSL Haas-ja + RE-USE server on siniku
+  (WebSocket streaming + batch fallback), kept as an option.
+
+* XButton down (hook thread): start recording.  Fast operations only —
+  the hook callback must return immediately.
+* XButton up (hook thread): hand the finish work to a worker thread.
+* Worker: transcribe, format, optionally polish, then click-focus the
+  control under the cursor and paste.
+* Esc while recording cancels without pasting.
+* Presses shorter than ``min_press_ms`` are discarded (accidental clicks).
+"""
+from __future__ import annotations
+
+import threading
+import time
+from pathlib import Path
+
+from . import formatter, polish
+from .audio import Recorder
+from .config import APP_DIR, Config
+from .local_stt import LocalAgreement, LocalEngine, LocalSttError
+from .stt_client import StreamClient, SttClient, SttError
+
+
+class VoicePasteApp:
+    def __init__(self, cfg: Config, overlay):
+        self.cfg = cfg
+        self.overlay = overlay
+        self.recorder = Recorder(on_chunk=self._on_chunk, device=cfg.mic_device)
+        self._state = "idle"
+        self._lock = threading.Lock()
+        self._active_button: int | None = None
+        self._pressed_at = 0.0
+        self._cancelled = False
+
+        self.local: LocalEngine | None = None
+        self.batch: SttClient | None = None
+        self.stream: StreamClient | None = None
+        self._streaming_live = False
+        self._agreement = LocalAgreement()
+
+        if cfg.engine == "local":
+            model, device, compute = cfg.resolved_model()
+            self.local = LocalEngine(model, device, compute,
+                                     Path(APP_DIR) / "models")
+            self.local.warm_async()  # load while the user looks at the screen
+        else:
+            self.batch = SttClient(cfg.stt_url, cfg.stt_transport)
+            if cfg.streaming:
+                self.stream = StreamClient(cfg.stt_url)
+                threading.Thread(target=self.stream.ensure_connected,
+                                 daemon=True).start()
+
+    def describe_engine(self) -> str:
+        if self.local is not None:
+            where = self.local.device
+            if self.local.fell_back_to_cpu:
+                where = "cpu (cuda fallback)"
+            return f"ローカル認識: {self.local.model_name} / {where}"
+        return "Haasサーバー: " + ("接続OK" if self.batch and self.batch.health()
+                                  else "応答なし")
+
+    # -- hook callbacks (must be fast) ------------------------------------
+    def on_xbutton(self, button: int, pressed: bool, x: int, y: int) -> bool:
+        if pressed:
+            return self._press(button)
+        return self._release(button)
+
+    def on_escape(self) -> None:
+        with self._lock:
+            if self._state != "recording":
+                return
+            self._cancelled = True
+            self._state = "idle"
+        self.recorder.stop()
+        if self.stream is not None:
+            self.stream.abort()
+        self.overlay.show_result("✕ キャンセル", 0.6)
+
+    # -- internals ----------------------------------------------------------
+    def _press(self, button: int) -> bool:
+        with self._lock:
+            if self._state != "idle":
+                return self.cfg.suppress_trigger
+            self._state = "recording"
+            self._active_button = button
+            self._pressed_at = time.monotonic()
+            self._cancelled = False
+            self._streaming_live = False
+        if self.stream is not None:
+            self._streaming_live = self.stream.start(self._on_partial)
+        try:
+            self.recorder.start()
+        except Exception:
+            with self._lock:
+                self._state = "idle"
+            if self.stream is not None:
+                self.stream.abort()
+            self.overlay.show_result("⚠ マイクを開けません", 1.2)
+            return self.cfg.suppress_trigger
+        self.overlay.show_recording()
+        threading.Thread(target=self._watchdog, daemon=True).start()
+        if self.local is not None:
+            self._agreement.reset()
+            threading.Thread(target=self._partial_loop, daemon=True).start()
+        return self.cfg.suppress_trigger
+
+    def _release(self, button: int) -> bool:
+        with self._lock:
+            if self._state != "recording" or button != self._active_button:
+                return False
+            self._state = "processing"
+            held_ms = (time.monotonic() - self._pressed_at) * 1000
+        threading.Thread(target=self._finish, args=(held_ms,),
+                         daemon=True).start()
+        return self.cfg.suppress_trigger
+
+    def _watchdog(self) -> None:
+        while True:
+            time.sleep(0.5)
+            with self._lock:
+                if self._state != "recording":
+                    return
+                elapsed = time.monotonic() - self._pressed_at
+            if elapsed >= self.cfg.max_seconds:
+                with self._lock:
+                    self._state = "processing"
+                threading.Thread(
+                    target=self._finish,
+                    args=(self.cfg.max_seconds * 1000,), daemon=True).start()
+                return
+
+    def _partial_loop(self) -> None:
+        """Local engine only: re-transcribe the buffer about once a second."""
+        while True:
+            time.sleep(self.cfg.partial_interval_seconds)
+            with self._lock:
+                if self._state != "recording":
+                    return
+            if self.recorder.seconds < 0.4 or self.recorder.seconds > 30:
+                continue  # too short to read; too long makes re-reads costly
+            try:
+                text = self.local.transcribe_pcm(self.recorder.snapshot(),
+                                                 fast=True)
+            except LocalSttError:
+                return
+            if text:
+                committed, pending = self._agreement.update(text)
+                self.overlay.update_partial(committed, pending)
+
+    def _on_chunk(self, data: bytes) -> None:
+        self.overlay.update_level(self.recorder.level)
+        if self._streaming_live and self.stream is not None:
+            self.stream.send_pcm(data)
+
+    def _on_partial(self, committed: str, pending: str) -> None:
+        self.overlay.update_partial(committed, pending)
+
+    def _transcribe(self, pcm: bytes) -> str:
+        if self.local is not None:
+            return self.local.transcribe_pcm(pcm)
+        raw = ""
+        if self._streaming_live and self.stream is not None:
+            try:
+                raw = self.stream.finish(timeout=30.0)
+            except SttError:
+                raw = ""
+        if not raw:
+            raw = self.batch.transcribe_pcm(pcm)
+        return raw
+
+    def _finish(self, held_ms: float) -> None:
+        from .win32_input import focus_and_paste
+
+        try:
+            pcm = self.recorder.stop()
+            if self._cancelled:
+                return
+            if held_ms < self.cfg.min_press_ms or len(pcm) < 3200:
+                if self.stream is not None:
+                    self.stream.abort()
+                self.overlay.hide()
+                return
+            self.overlay.show_processing()
+
+            try:
+                raw = self._transcribe(pcm)
+            except (SttError, LocalSttError):
+                if self.local is not None:
+                    self.overlay.show_result("⚠ 認識エンジンでエラーが発生しました", 1.4)
+                else:
+                    self.overlay.show_result("⚠ STTサーバーに接続できません", 1.4)
+                return
+            if self._cancelled:
+                return
+
+            text = formatter.format_text(
+                raw, remove_fillers=self.cfg.remove_fillers,
+                voice_commands=self.cfg.voice_commands,
+                aggressive_commands=self.cfg.aggressive_commands)
+            if not text:
+                self.overlay.show_result("⚠ 聞き取れませんでした", 1.0)
+                return
+            if self.cfg.polish_enabled:
+                text = polish.polish(text, self.cfg.polish_base_url,
+                                     self.cfg.polish_model,
+                                     self.cfg.polish_api_key_env)
+            focus_and_paste(text, click_to_focus=self.cfg.click_to_focus,
+                            restore_clipboard=self.cfg.restore_clipboard)
+            self.overlay.show_result("✓ 入力しました", 0.8)
+        finally:
+            with self._lock:
+                self._state = "idle"
+                self._active_button = None
