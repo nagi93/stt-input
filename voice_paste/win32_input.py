@@ -165,17 +165,29 @@ def window_root_at(x: int, y: int) -> int:
     return hwnd or 0
 
 
-def window_title_at(x: int, y: int) -> str:
-    """'Title [Class]' of the root window under a point (diagnostics)."""
+def _describe_window(root: int) -> str:
     user32 = _user32()
-    root = window_root_at(x, y)
-    if not root:
-        return "(no window)"
     title_buf = ctypes.create_unicode_buffer(256)
     class_buf = ctypes.create_unicode_buffer(128)
     user32.GetWindowTextW(root, title_buf, 256)
     user32.GetClassNameW(root, class_buf, 128)
     return f"{title_buf.value} [{class_buf.value}]"
+
+
+def window_title_at(x: int, y: int) -> str:
+    """'Title [Class]' of the root window under a point (diagnostics)."""
+    root = window_root_at(x, y)
+    if not root:
+        return "(no window)"
+    return _describe_window(root)
+
+
+def foreground_title() -> str:
+    """'Title [Class]' of the current foreground window (diagnostics)."""
+    root = _user32().GetForegroundWindow()
+    if not root:
+        return "(none)"
+    return _describe_window(root)
 
 
 # ---------------------------------------------------------------- clipboard

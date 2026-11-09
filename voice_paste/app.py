@@ -250,8 +250,8 @@ class VoicePasteApp:
         return raw
 
     def _finish(self, held_ms: float) -> None:
-        from .win32_input import focus_and_paste, get_cursor_pos, \
-            window_title_at
+        from .win32_input import focus_and_paste, foreground_title, \
+            get_cursor_pos, window_title_at
 
         try:
             pcm = self.recorder.stop()
@@ -292,6 +292,10 @@ class VoicePasteApp:
             cx, cy = get_cursor_pos()
             log_event(f"paste: target={window_title_at(cx, cy)} "
                       f"at=({cx},{cy}) text={text!r}")
+            # The overlay floats next to the cursor; hide it before
+            # clicking so it can never be the window that receives the
+            # click or the pasted keys.
+            self.overlay.hide()
             try:
                 focus_and_paste(text, click_to_focus=self.cfg.click_to_focus,
                                 restore_clipboard=self.cfg.restore_clipboard)
@@ -299,7 +303,7 @@ class VoicePasteApp:
                 log_error("paste", exc)
                 self.overlay.show_result("⚠ 貼り付けに失敗しました", 1.4)
                 return
-            log_event("paste: done")
+            log_event(f"paste: done, foreground={foreground_title()}")
             note = ""
             if self.cfg.engine == "haas" and (self._session_local
                                               or self._used_fallback):
