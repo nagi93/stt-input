@@ -30,7 +30,7 @@ from . import formatter, polish
 from .audio import Recorder
 from .config import APP_DIR, Config
 from .local_stt import LocalAgreement, LocalEngine, LocalSttError
-from .logutil import log_error
+from .logutil import log_error, log_event
 from .stt_client import StreamClient, SttClient, SttError
 
 
@@ -169,6 +169,8 @@ class VoicePasteApp:
                 self.stream.abort()
             self.overlay.show_result("⚠ マイクを開けません", 1.2)
             return self.cfg.suppress_trigger
+        log_event(f"press: engine={'local' if self._session_local else 'haas'} "
+                  f"mic_device={self.recorder.active_device}")
         self.overlay.show_recording()
         threading.Thread(target=self._watchdog, daemon=True).start()
         if self._session_local:
@@ -248,7 +250,8 @@ class VoicePasteApp:
         return raw
 
     def _finish(self, held_ms: float) -> None:
-        from .win32_input import focus_and_paste
+        from .win32_input import focus_and_paste, get_cursor_pos, \
+            window_title_at
 
         try:
             pcm = self.recorder.stop()
@@ -272,20 +275,31 @@ class VoicePasteApp:
                 return
             if self._cancelled:
                 return
+            log_event(f"transcribed: {raw!r}")
 
             text = formatter.format_text(
                 raw, remove_fillers=self.cfg.remove_fillers,
                 voice_commands=self.cfg.voice_commands,
                 aggressive_commands=self.cfg.aggressive_commands)
             if not text:
+                log_event("result empty after formatting")
                 self.overlay.show_result("⚠ 聞き取れませんでした", 1.0)
                 return
             if self.cfg.polish_enabled:
                 text = polish.polish(text, self.cfg.polish_base_url,
                                      self.cfg.polish_model,
                                      self.cfg.polish_api_key_env)
-            focus_and_paste(text, click_to_focus=self.cfg.click_to_focus,
-                            restore_clipboard=self.cfg.restore_clipboard)
+            cx, cy = get_cursor_pos()
+            log_event(f"paste: target={window_title_at(cx, cy)} "
+                      f"at=({cx},{cy}) text={text!r}")
+            try:
+                focus_and_paste(text, click_to_focus=self.cfg.click_to_focus,
+                                restore_clipboard=self.cfg.restore_clipboard)
+            except Exception as exc:
+                log_error("paste", exc)
+                self.overlay.show_result("⚠ 貼り付けに失敗しました", 1.4)
+                return
+            log_event("paste: done")
             note = ""
             if self.cfg.engine == "haas" and (self._session_local
                                               or self._used_fallback):

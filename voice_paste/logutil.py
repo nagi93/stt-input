@@ -19,19 +19,31 @@ _LOCK = threading.Lock()
 _MAX_BYTES = 1_000_000
 
 
+def _append(line: str) -> None:
+    with _LOCK:
+        _LOG.parent.mkdir(parents=True, exist_ok=True)
+        if _LOG.exists() and _LOG.stat().st_size > _MAX_BYTES:
+            _LOG.write_text("", encoding="utf-8")
+        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+        with _LOG.open("a", encoding="utf-8") as f:
+            f.write(f"[{ts}] {line}\n")
+
+
 def log_error(context: str, exc: BaseException | None = None,
               message: str = "") -> None:
     try:
-        with _LOCK:
-            _LOG.parent.mkdir(parents=True, exist_ok=True)
-            if _LOG.exists() and _LOG.stat().st_size > _MAX_BYTES:
-                _LOG.write_text("", encoding="utf-8")
-            ts = time.strftime("%Y-%m-%d %H:%M:%S")
-            detail = ""
-            if exc is not None:
-                detail = "".join(traceback.format_exception(
-                    type(exc), exc, exc.__traceback__)).rstrip()
-            with _LOG.open("a", encoding="utf-8") as f:
-                f.write(f"[{ts}] {context} {message}\n{detail}\n")
+        detail = ""
+        if exc is not None:
+            detail = "".join(traceback.format_exception(
+                type(exc), exc, exc.__traceback__)).rstrip()
+        _append(f"ERROR {context} {message}\n{detail}")
     except Exception:
         pass  # logging must never take the app down
+
+
+def log_event(message: str) -> None:
+    """Info-level trace of the dictation pipeline (press/transcribe/paste)."""
+    try:
+        _append(f"INFO {message}")
+    except Exception:
+        pass
