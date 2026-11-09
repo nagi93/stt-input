@@ -50,6 +50,8 @@ def main() -> int:
         # Never fail silently: with pythonw there is no console, so
         # surface a dead hook on the overlay as well as stderr.
         print(f"hook install failed: {hook.install_error}", file=sys.stderr)
+        from voice_paste.logutil import log_error
+        log_error("hook.install", message=str(hook.install_error))
         overlay.show_result("⚠ ボタンのフックを登録できませんでした", 3.0)
 
     _start_tray(root, app, hook, cfg)

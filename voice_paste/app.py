@@ -30,6 +30,7 @@ from . import formatter, polish
 from .audio import Recorder
 from .config import APP_DIR, Config
 from .local_stt import LocalAgreement, LocalEngine, LocalSttError
+from .logutil import log_error
 from .stt_client import StreamClient, SttClient, SttError
 
 
@@ -160,7 +161,8 @@ class VoicePasteApp:
             self._streaming_live = self.stream.start(self._on_partial)
         try:
             self.recorder.start()
-        except Exception:
+        except Exception as exc:
+            log_error("recorder.start", exc)
             with self._lock:
                 self._state = "idle"
             if self.stream is not None:
@@ -261,7 +263,8 @@ class VoicePasteApp:
 
             try:
                 raw = self._transcribe(pcm)
-            except (SttError, LocalSttError):
+            except (SttError, LocalSttError) as exc:
+                log_error("transcribe", exc)
                 if self._session_local:
                     self.overlay.show_result("⚠ 認識エンジンでエラーが発生しました", 1.4)
                 else:

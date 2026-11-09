@@ -28,13 +28,36 @@ def input_device_names() -> list[str]:
     return names
 
 
-def find_input_device(name_part: str) -> int | None:
-    """Index of an input device whose name contains ``name_part``.
+def _candidate_sort_key(hostapi_name: str, default_samplerate: float):
+    """Order endpoints of one physical device for a 16 kHz open.
+
+    PortAudio's WASAPI backend does NOT resample: an endpoint whose
+    native rate is not 16 kHz fails with PaErrorCode -9997 (observed
+    live with the AG06 at 44.1 kHz).  DirectSound and MME go through
+    the Windows resampler and accept 16 kHz, so they rank first;
+    WASAPI ranks first only when its native rate already is 16 kHz;
+    WDM-KS is last (its blocking API is unsupported by PortAudio).
+    """
+    api = hostapi_name.upper()
+    if "WASAPI" in api:
+        return (0, 0) if default_samplerate == 16000 else (2, 0)
+    if "DIRECTSOUND" in api:
+        return (0, 1)
+    if "MME" in api:
+        return (0, 2)
+    if "WDM-KS" in api or "WDMKS" in api:
+        return (3, 0)
+    return (1, 0)
+
+
+def find_input_devices(name_part: str) -> list[int]:
+    """All endpoint indices matching ``name_part``, best first.
 
     PortAudio indices are NOT stable across processes (re-enumeration
     can reorder them — observed live on siniku, where the same AG06
-    moved between indices minutes apart), so a stored integer rots.
-    WASAPI is preferred for low latency.  Returns None when no match.
+    moved between indices minutes apart), so a stored integer rots;
+    the name is re-resolved on every recording start, and the caller
+    tries each candidate until one opens.
     """
     import sounddevice as sd
 
@@ -42,11 +65,15 @@ def find_input_device(name_part: str) -> int | None:
     for idx, dev in enumerate(sd.query_devices()):
         if dev["max_input_channels"] > 0 and name_part in dev["name"]:
             hostapi = sd.query_hostapis(dev["hostapi"])["name"]
-            matches.append((0 if "WASAPI" in hostapi else 1, idx))
-    if not matches:
-        return None
+            key = _candidate_sort_key(hostapi, dev["default_samplerate"])
+            matches.append((key, idx))
     matches.sort()
-    return matches[0][1]
+    return [idx for _, idx in matches]
+
+
+def find_input_device(name_part: str) -> int | None:
+    devices = find_input_devices(name_part)
+    return devices[0] if devices else None
 
 
 class Recorder:
@@ -59,17 +86,18 @@ class Recorder:
         self._lock = threading.Lock()
         self._stream = None
         self.level = 0.0  # 0.0 - 1.0, latest block RMS (smoothed)
+        self.active_device: int | None = None
 
     @property
     def recording(self) -> bool:
         return self._stream is not None
 
-    def _resolve_device(self) -> int | None:
+    def _candidate_devices(self) -> list[int | None]:
         if self.device is not None:
-            return self.device
+            return [self.device]
         if self.device_name:
-            return find_input_device(self.device_name)
-        return None
+            return find_input_devices(self.device_name) or [None]
+        return [None]
 
     def start(self) -> None:
         import sounddevice as sd  # imported lazily: not needed for tests
@@ -89,11 +117,28 @@ class Recorder:
             if self.on_chunk is not None:
                 self.on_chunk(data)
 
-        self._stream = sd.InputStream(
-            samplerate=SAMPLE_RATE, channels=1, dtype="int16",
-            blocksize=BLOCK_SAMPLES, device=self._resolve_device(),
-            callback=callback)
-        self._stream.start()
+        # One physical mic appears as several endpoints (MME /
+        # DirectSound / WASAPI / WDM-KS) and some cannot open at
+        # 16 kHz; try each candidate until one opens.
+        errors: list[str] = []
+        last_exc: Exception | None = None
+        for device in self._candidate_devices():
+            try:
+                stream = sd.InputStream(
+                    samplerate=SAMPLE_RATE, channels=1, dtype="int16",
+                    blocksize=BLOCK_SAMPLES, device=device,
+                    callback=callback)
+                stream.start()
+            except Exception as exc:
+                errors.append(f"device={device}: {exc}")
+                last_exc = exc
+                continue
+            self._stream = stream
+            self.active_device = device
+            return
+        raise RuntimeError(
+            "no candidate microphone could be opened (" +
+            "; ".join(errors) + ")") from last_exc
 
     def stop(self) -> bytes:
         stream, self._stream = self._stream, None
