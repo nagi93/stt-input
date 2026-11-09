@@ -25,10 +25,10 @@ class Config:
     min_press_ms: int = 350
     max_seconds: float = 120.0
 
-    # Recognition engine: "haas" (the existing WSL Haas-ja server on
-    # siniku — the default when that server exists) or "local"
-    # (faster-whisper on this PC, no WSL).  The installer writes "haas"
-    # when the server answers at install time, "local" otherwise.
+    # Recognition engine: "haas" (an external Haas-ja STT server — the
+    # default when that server exists) or "local" (faster-whisper on
+    # this PC, no server).  The installer writes "haas" when the server
+    # answers at install time, "local" otherwise.
     engine: str = "haas"
     # With engine="haas", fall back to the local engine when the server
     # is down (decided per session by a background health monitor, and
@@ -42,7 +42,7 @@ class Config:
     whisper_compute: str = "auto"  # auto | float16 | int8_float16 | int8
     partial_interval_seconds: float = 1.0
 
-    # Optional Haas server engine (WSL, siniku only)
+    # Optional external STT server engine
     stt_url: str = DEFAULT_URL
     stt_transport: str = "auto"  # auto | direct | wsl
     streaming: bool = True       # live partials in the overlay when possible
@@ -68,7 +68,7 @@ class Config:
     polish_api_key_env: str = "VOICE_PASTE_LLM_KEY"
 
     mic_device: int | None = None
-    # Preferred microphone by name substring (e.g. "AG06").  Device
+    # Preferred microphone by name substring.  Device
     # indices are unstable across processes, so a name survives where a
     # stored number does not.  mic_device (int) wins when both are set.
     mic_name: str = ""

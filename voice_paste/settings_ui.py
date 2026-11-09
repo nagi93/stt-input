@@ -85,16 +85,11 @@ def apply_values(cfg: Config, values: dict) -> set[str]:
 
 def mic_choices() -> list[tuple[str, str]]:
     """(display label, mic_name value) pairs for the microphone picker."""
-    from .audio import input_device_names
+    from .audio import input_device_names, mic_name_key
 
     choices = [("自動（Windowsの既定）", "")]
     for name in input_device_names():
-        key = name
-        for known in ("AG06", "AG03"):
-            if known in name:
-                key = known
-                break
-        choices.append((name, key))
+        choices.append((name, mic_name_key(name)))
     return choices
 
 
@@ -148,7 +143,7 @@ def open_settings(root, cfg: Config, app, hook) -> None:
     engine_box = ttk.Frame(tab)
     engine_box.grid(row=r, column=1, sticky="w", padx=10, pady=5)
     ev = var("engine", "str", current["engine"])
-    ttk.Radiobutton(engine_box, text="Haasサーバー優先 (siniku)",
+    ttk.Radiobutton(engine_box, text="サーバー優先 (Haas)",
                     variable=ev, value="haas").pack(side="left")
     ttk.Radiobutton(engine_box, text="ローカル認識のみ",
                     variable=ev, value="local").pack(side="left", padx=8)

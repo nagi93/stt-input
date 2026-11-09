@@ -28,12 +28,29 @@ def input_device_names() -> list[str]:
     return names
 
 
+def mic_name_key(device_name: str) -> str:
+    """Short, stable config key for a device name.
+
+    Windows endpoint names wrap the distinctive part in parentheses
+    (e.g. "Line (USB Audio Interface)"); that part is shared by every
+    endpoint of the same physical device, while the full name varies
+    by host API.  Falls back to the full name when there is none.
+    """
+    start = device_name.rfind("(")
+    end = device_name.rfind(")")
+    if 0 <= start < end:
+        inner = device_name[start + 1:end].strip()
+        if inner:
+            return inner
+    return device_name
+
+
 def _candidate_sort_key(hostapi_name: str, default_samplerate: float):
     """Order endpoints of one physical device for a 16 kHz open.
 
     PortAudio's WASAPI backend does NOT resample: an endpoint whose
     native rate is not 16 kHz fails with PaErrorCode -9997 (observed
-    live with the AG06 at 44.1 kHz).  DirectSound and MME go through
+    live with a USB audio interface at 44.1 kHz).  DirectSound and MME go through
     the Windows resampler and accept 16 kHz, so they rank first;
     WASAPI ranks first only when its native rate already is 16 kHz;
     WDM-KS is last (its blocking API is unsupported by PortAudio).
@@ -54,10 +71,10 @@ def find_input_devices(name_part: str) -> list[int]:
     """All endpoint indices matching ``name_part``, best first.
 
     PortAudio indices are NOT stable across processes (re-enumeration
-    can reorder them — observed live on siniku, where the same AG06
-    moved between indices minutes apart), so a stored integer rots;
-    the name is re-resolved on every recording start, and the caller
-    tries each candidate until one opens.
+    can reorder them — observed live, where the same USB audio
+    interface moved between indices minutes apart), so a stored
+    integer rots; the name is re-resolved on every recording start,
+    and the caller tries each candidate until one opens.
     """
     import sounddevice as sd
 

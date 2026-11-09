@@ -3,8 +3,8 @@
 State machine:  IDLE -> RECORDING -> PROCESSING -> IDLE
 
 Engines:
-* ``haas`` (default when the server exists): the WSL Haas-ja + RE-USE
-  server on siniku (WebSocket streaming + batch fallback).  A health
+* ``haas`` (default when the server exists): an external Haas-ja +
+  RE-USE STT server (WebSocket streaming + batch fallback).  A health
   monitor switches sessions to the local engine while it is down.
 * ``local``: faster-whisper runs on this PC — no WSL, no server.
   While recording, a partial thread re-transcribes the audio captured

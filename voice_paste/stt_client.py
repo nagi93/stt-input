@@ -1,7 +1,6 @@
-"""Client for the existing WSL STT server on siniku (Haas-ja + RE-USE).
+"""Client for an external STT server (Haas-ja + RE-USE, e.g. in WSL).
 
-The server (``wsl/stt_server.py`` in the G2 muse-connect tree, port 8790)
-already provides everything this app needs, so nothing is re-implemented:
+The server API provides everything this app needs:
 
   POST /transcribe   body = audio file bytes -> {"ok": true, "text": "..."}
   GET  /health       -> {"ok": true}
@@ -11,9 +10,9 @@ already provides everything this app needs, so nothing is re-implemented:
       server {"type": "partial", "committed": "...", "pending": "..."}
              {"type": "final", "text": "..."} / {"type": "error", ...}
 
-Windows-side access follows the proven pattern of the bridge's ``stt.py``:
-try a direct HTTP request to 127.0.0.1:8790 first, and if that fails fall
-back to ``wsl.exe ... curl`` because WSL's localhost port relay can hang
+Access pattern: try a direct HTTP request to 127.0.0.1:8790 first, and
+if that fails fall back to ``wsl.exe ... curl`` because WSL's localhost
+port relay can hang
 after the server restarts.  The WebSocket path is direct-only; if it cannot
 connect, the caller records locally and uses the batch path instead.
 """

@@ -414,7 +414,7 @@ PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 # IME composition path; in real web editors that garbles dictated
 # Japanese (katakana folded to hiragana, kanji swallowed into the
 # composition and emitted late/out of order — verified live against
-# the Muse chat editor 2026-11-09).  WM_CHAR messages reach Blink's
+# a production web chat editor).  WM_CHAR messages reach Blink's
 # text input directly and land exactly, so browsers get those instead.
 BROWSER_PROCESSES = {
     "chrome.exe", "msedge.exe", "brave.exe", "vivaldi.exe",
