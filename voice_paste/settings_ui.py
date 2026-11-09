@@ -51,7 +51,7 @@ def validate(values: dict) -> list[str]:
         errors.append("サーバー接続方式の値が不正です。")
     if values["trigger"] not in ("xbutton1", "xbutton2", "both"):
         errors.append("トリガーボタンの値が不正です。")
-    if values["insert_method"] not in ("type", "paste"):
+    if values["insert_method"] not in ("auto", "type", "paste", "wmchar"):
         errors.append("入力方式の値が不正です。")
     if values["whisper_model"] not in MODELS:
         errors.append("モデルの値が不正です。")
@@ -243,11 +243,12 @@ def open_settings(root, cfg: Config, app, hook) -> None:
         r += 1
     grid_row(tab, r, "入力方式",
              ttk.Combobox(tab, width=16, state="readonly",
-                          values=["type", "paste"],
+                          values=["auto", "type", "paste", "wmchar"],
                           textvariable=var("insert_method", "str",
                                            current["insert_method"])))
     r += 1
-    ttk.Label(tab, text="type=キー入力として打つ（確実）／ paste=Ctrl+Vで貼る",
+    ttk.Label(tab, text="auto=ブラウザ等には文字を直接送信、それ以外はキー入力"
+                        "／ type=キー入力として打つ ／ paste=Ctrl+Vで貼る",
               foreground="#666").grid(row=r, column=0, columnspan=2,
                                       sticky="w", padx=10)
     r += 1

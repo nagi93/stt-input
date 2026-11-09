@@ -50,7 +50,10 @@ class Config:
     # What happens on release
     click_to_focus: bool = True  # click the control under the cursor first
     restore_clipboard: bool = True
-    insert_method: str = "type"  # "type" (unicode typing) or "paste" (Ctrl+V)
+    # "auto": browsers/Chromium get WM_CHAR direct delivery (unicode key
+    # events garble in web editors), everything else unicode typing.
+    # "type" / "paste" (Ctrl+V) / "wmchar" force one route.
+    insert_method: str = "auto"
 
     # Formatter
     remove_fillers: bool = True
