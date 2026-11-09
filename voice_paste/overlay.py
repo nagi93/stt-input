@@ -48,7 +48,33 @@ class Overlay:
             padx=10, pady=6)
         self.label.pack()
         self.win.withdraw()
+        self._make_noactivate()
         self.root.after(50, self._tick)
+
+    def _make_noactivate(self) -> None:
+        """WS_EX_NOACTIVATE: showing the overlay must never steal focus.
+
+        Without this, deiconify() activates the overlay window; the
+        dictation target loses the foreground, and the paste that
+        follows races the target's re-activation (and loses).
+        """
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            user32 = ctypes.WinDLL("user32", use_last_error=True)
+            user32.GetWindowLongW.restype = ctypes.c_long
+            user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+            user32.SetWindowLongW.restype = ctypes.c_long
+            user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int,
+                                              ctypes.c_long]
+            GWL_EXSTYLE, WS_EX_NOACTIVATE = -20, 0x08000000
+            hwnd = self.win.winfo_id()
+            style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            user32.SetWindowLongW(hwnd, GWL_EXSTYLE,
+                                  style | WS_EX_NOACTIVATE)
+        except Exception:
+            pass
 
     # -- called from any thread -----------------------------------------
     def show_recording(self) -> None:

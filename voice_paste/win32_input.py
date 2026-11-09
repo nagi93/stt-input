@@ -190,6 +190,53 @@ def foreground_title() -> str:
     return _describe_window(root)
 
 
+def focused_edit_text() -> str | None:
+    """Text of the focused control if it is a classic edit/RichEdit.
+
+    Verification only: lets the app confirm a paste actually landed
+    (works for Notepad's RichEditD2DPT and standard edit controls;
+    returns None for anything else, e.g. browser renderers).
+    """
+    user32 = _user32()
+
+    class GUITHREADINFO(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("flags", wintypes.DWORD),
+                    ("hwndActive", wintypes.HWND), ("hwndFocus", wintypes.HWND),
+                    ("hwndCapture", wintypes.HWND),
+                    ("hwndMenuOwner", wintypes.HWND),
+                    ("hwndMoveSize", wintypes.HWND),
+                    ("hwndCaret", wintypes.HWND), ("rcCaret", wintypes.RECT)]
+
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND,
+                                                ctypes.POINTER(wintypes.DWORD)]
+    user32.GetGUIThreadInfo.restype = wintypes.BOOL
+    user32.GetGUIThreadInfo.argtypes = [wintypes.DWORD, ctypes.c_void_p]
+    user32.SendMessageW.restype = ctypes.c_ssize_t
+    user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT,
+                                    wintypes.WPARAM, wintypes.LPARAM]
+    fg = user32.GetForegroundWindow()
+    if not fg:
+        return None
+    tid = user32.GetWindowThreadProcessId(fg, None)
+    gti = GUITHREADINFO()
+    gti.cbSize = ctypes.sizeof(GUITHREADINFO)
+    if not user32.GetGUIThreadInfo(tid, ctypes.byref(gti)) or not gti.hwndFocus:
+        return None
+    class_buf = ctypes.create_unicode_buffer(128)
+    user32.GetClassNameW(gti.hwndFocus, class_buf, 128)
+    if "Edit" not in class_buf.value and "RichEdit" not in class_buf.value:
+        return None
+    WM_GETTEXT, WM_GETTEXTLENGTH = 0x000D, 0x000E
+    n = user32.SendMessageW(gti.hwndFocus, WM_GETTEXTLENGTH, 0, 0)
+    if n is None or n < 0:
+        return None
+    buf = ctypes.create_unicode_buffer(int(n) + 2)
+    user32.SendMessageW(gti.hwndFocus, WM_GETTEXT, int(n) + 1,
+                        ctypes.cast(buf, ctypes.c_void_p).value)
+    return buf.value
+
+
 # ---------------------------------------------------------------- clipboard
 def _clipboard_get_text() -> str | None:
     user32, kernel32 = _user32(), _kernel32()
@@ -278,6 +325,49 @@ def _type_unicode(text: str) -> None:
         _send_inputs([down, up])
 
 
+def _wait_for_focus(root: int, timeout: float = 0.9) -> bool:
+    """Wait until ``root`` is foreground AND holds keyboard focus.
+
+    Window activation is asynchronous: after SetForegroundWindow and
+    a click, a slow app (WinUI Notepad, Chrome's renderer) can take
+    hundreds of ms before its edit control actually has the caret.
+    A Ctrl+V sent inside that window goes to the previously focused
+    window (for us: the overlay) and is silently lost — the failure
+    that made dictation "succeed" without pasting anything.
+    """
+    user32 = _user32()
+
+    class GUITHREADINFO(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("flags", wintypes.DWORD),
+                    ("hwndActive", wintypes.HWND), ("hwndFocus", wintypes.HWND),
+                    ("hwndCapture", wintypes.HWND),
+                    ("hwndMenuOwner", wintypes.HWND),
+                    ("hwndMoveSize", wintypes.HWND),
+                    ("hwndCaret", wintypes.HWND), ("rcCaret", wintypes.RECT)]
+
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND,
+                                                ctypes.POINTER(wintypes.DWORD)]
+    user32.GetGUIThreadInfo.restype = wintypes.BOOL
+    user32.GetGUIThreadInfo.argtypes = [wintypes.DWORD, ctypes.c_void_p]
+    user32.GetAncestor.restype = wintypes.HWND
+    user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        fg = user32.GetForegroundWindow()
+        if fg and fg == root:
+            tid = user32.GetWindowThreadProcessId(fg, None)
+            gti = GUITHREADINFO()
+            gti.cbSize = ctypes.sizeof(GUITHREADINFO)
+            if user32.GetGUIThreadInfo(tid, ctypes.byref(gti)) and gti.hwndFocus:
+                if user32.GetAncestor(gti.hwndFocus, GA_ROOT) == root:
+                    time.sleep(0.03)  # let the caret settle
+                    return True
+        time.sleep(0.02)
+    return False
+
+
 def focus_and_paste(text: str, click_to_focus: bool = True,
                     restore_clipboard: bool = True) -> None:
     """Click the control under the cursor (if asked), then paste."""
@@ -291,7 +381,8 @@ def focus_and_paste(text: str, click_to_focus: bool = True,
             except Exception:
                 pass
         click_at_cursor()
-        time.sleep(0.06)
+        if root:
+            _wait_for_focus(root)
     paste_text(text, restore_clipboard=restore_clipboard)
 
 

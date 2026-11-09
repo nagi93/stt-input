@@ -250,8 +250,8 @@ class VoicePasteApp:
         return raw
 
     def _finish(self, held_ms: float) -> None:
-        from .win32_input import focus_and_paste, foreground_title, \
-            get_cursor_pos, window_title_at
+        from .win32_input import focus_and_paste, focused_edit_text, \
+            foreground_title, get_cursor_pos, window_title_at
 
         try:
             pcm = self.recorder.stop()
@@ -304,6 +304,13 @@ class VoicePasteApp:
                 self.overlay.show_result("⚠ 貼り付けに失敗しました", 1.4)
                 return
             log_event(f"paste: done, foreground={foreground_title()}")
+            try:
+                landed = focused_edit_text()
+                if landed is not None:
+                    log_event(f"paste verify: edit contains text: "
+                              f"{text[:20] in landed}")
+            except Exception as exc:
+                log_error("paste-verify", exc)
             note = ""
             if self.cfg.engine == "haas" and (self._session_local
                                               or self._used_fallback):
