@@ -128,6 +128,27 @@ def _declare_signatures(user32, kernel32) -> None:
     user32.GetClassNameW.restype = ctypes.c_int
     user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR,
                                      ctypes.c_int]
+    user32.GetWindowRect.restype = wintypes.BOOL
+    user32.GetWindowRect.argtypes = [wintypes.HWND,
+                                     ctypes.POINTER(wintypes.RECT)]
+    user32.EnumChildWindows.restype = wintypes.BOOL
+    user32.EnumChildWindows.argtypes = [wintypes.HWND, ctypes.c_void_p,
+                                        wintypes.LPARAM]
+    user32.PostMessageW.restype = wintypes.BOOL
+    user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT,
+                                    wintypes.WPARAM, wintypes.LPARAM]
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND,
+                                                ctypes.POINTER(wintypes.DWORD)]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL,
+                                     wintypes.DWORD]
+    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    kernel32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD)]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
 
 
 _USER32 = None
@@ -385,19 +406,139 @@ def _wait_for_focus(root: int, timeout: float = 0.9) -> bool:
     return False
 
 
+WM_CHAR = 0x0102
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+# Processes whose content is a web renderer.  Chromium (browsers and
+# Electron apps alike) routes KEYEVENTF_UNICODE key events through its
+# IME composition path; in real web editors that garbles dictated
+# Japanese (katakana folded to hiragana, kanji swallowed into the
+# composition and emitted late/out of order — verified live against
+# the Muse chat editor 2026-11-09).  WM_CHAR messages reach Blink's
+# text input directly and land exactly, so browsers get those instead.
+BROWSER_PROCESSES = {
+    "chrome.exe", "msedge.exe", "brave.exe", "vivaldi.exe",
+    "opera.exe", "opera_gx.exe", "firefox.exe", "waterfox.exe",
+    "arc.exe", "chromium.exe",
+}
+
+_WNDENUMPROC_T = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND,
+                                    wintypes.LPARAM) if IS_WIN else None
+
+
+def choose_insert_method(method: str, process_name: str,
+                         renderer_class: str) -> str:
+    """Resolve the configured method to the concrete route.
+
+    Pure function (unit-tested off-Windows).  ``renderer_class`` is the
+    class of the child window under the release point, "" when none.
+    """
+    if method in ("type", "paste"):
+        return method
+    has_renderer = bool(renderer_class)
+    if method == "wmchar":
+        return "wmchar" if has_renderer else "type"
+    # "auto" (and anything unknown): Chromium content — a browser
+    # process, or any window hosting a RenderWidgetHost child (which
+    # also covers Electron apps such as VS Code / Discord / Slack).
+    if has_renderer and (process_name in BROWSER_PROCESSES
+                         or "RenderWidgetHost" in renderer_class):
+        return "wmchar"
+    return "type"
+
+
+def _process_image_name(root: int) -> str:
+    """Lower-case image file name (e.g. 'chrome.exe') for a window."""
+    user32, kernel32 = _user32(), _kernel32()
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(root, ctypes.byref(pid))
+    if not pid.value:
+        return ""
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,
+                                  False, pid.value)
+    if not handle:
+        return ""
+    try:
+        buf = ctypes.create_unicode_buffer(1024)
+        size = wintypes.DWORD(1024)
+        if not kernel32.QueryFullProcessImageNameW(
+                handle, 0, buf, ctypes.byref(size)):
+            return ""
+        return buf.value.replace("/", "\\").rsplit("\\", 1)[-1].lower()
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _renderer_child_at(root: int, x: int, y: int) -> tuple[int, str]:
+    """Child window of ``root`` covering (x, y): (hwnd, class name).
+
+    Prefers a Chrome_RenderWidgetHostHWND (the web content renderer);
+    otherwise the smallest covering child; (0, "") when none.
+    """
+    user32 = _user32()
+    hits: list[tuple[int, str, int]] = []
+
+    @_WNDENUMPROC_T
+    def _cb(hwnd, _lparam):
+        rect = wintypes.RECT()
+        if user32.GetWindowRect(hwnd, ctypes.byref(rect)) \
+                and rect.left <= x < rect.right \
+                and rect.top <= y < rect.bottom:
+            class_buf = ctypes.create_unicode_buffer(128)
+            user32.GetClassNameW(hwnd, class_buf, 128)
+            area = (rect.right - rect.left) * (rect.bottom - rect.top)
+            hits.append((int(hwnd), class_buf.value, area))
+        return True
+
+    user32.EnumChildWindows(root, _cb, 0)
+    if not hits:
+        return 0, ""
+    for hwnd, cls, _area in hits:
+        if "RenderWidgetHost" in cls:
+            return hwnd, cls
+    hits.sort(key=lambda h: h[2])
+    return hits[0][0], hits[0][1]
+
+
+def post_text(hwnd: int, text: str) -> None:
+    """Deliver text as WM_CHAR messages straight to a window.
+
+    One message per UTF-16 code unit (surrogate pairs assemble in the
+    renderer).  LF is sent as CR, the canonical line-break character;
+    a bare CR is dropped (it would otherwise pair with a following LF).
+    """
+    user32 = _user32()
+    units = text.encode("utf-16-le")
+    for i in range(0, len(units), 2):
+        code = units[i] | (units[i + 1] << 8)
+        if code == 0x0D:
+            continue
+        if code == 0x0A:
+            code = 0x0D
+        user32.PostMessageW(hwnd, WM_CHAR, code, 0)
+        time.sleep(0.001)
+
+
 def focus_and_paste(text: str, click_to_focus: bool = True,
                     restore_clipboard: bool = True,
-                    method: str = "type") -> None:
+                    method: str = "auto") -> str:
     """Click the control under the cursor (if asked), then insert text.
 
-    ``method="type"`` types the text as unicode key events;
-    ``method="paste"`` uses the clipboard + Ctrl+V.  Typing is the
-    default: on this machine's Win11 Notepad (RichEditD2DPT) and in
-    several WinUI apps, synthetic Ctrl+V and even WM_PASTE silently
-    do nothing while typed unicode lands (verified live 2026-11-09).
+    Routes: ``type`` (unicode key events), ``paste`` (clipboard +
+    Ctrl+V), ``wmchar`` (WM_CHAR straight to the renderer window),
+    ``auto`` (wmchar for browsers/Chromium content, typing otherwise).
+    Typing is the fallback because on this machine's Win11 Notepad
+    (RichEditD2DPT) and in several WinUI apps, synthetic Ctrl+V and
+    even WM_PASTE silently do nothing while typed unicode lands;
+    conversely, web editors garble typed unicode through Chromium's
+    IME composition path while WM_CHAR lands exactly (both verified
+    live 2026-11-09).  Returns the route actually used.
     """
+    root = 0
+    point: tuple[int, int] | None = None
     if click_to_focus:
         x, y = get_cursor_pos()
+        point = (x, y)
         root = window_root_at(x, y)
         user32 = _user32()
         if root and root != user32.GetForegroundWindow():
@@ -408,10 +549,26 @@ def focus_and_paste(text: str, click_to_focus: bool = True,
         click_at_cursor()
         if root:
             _wait_for_focus(root)
-    if method == "paste":
+    else:
+        root = _user32().GetForegroundWindow() or 0
+
+    resolved = method
+    if method not in ("type", "paste"):
+        target, renderer_class = 0, ""
+        if root and point is not None:
+            target, renderer_class = _renderer_child_at(
+                root, point[0], point[1])
+        process_name = _process_image_name(root) if root else ""
+        resolved = choose_insert_method(method, process_name,
+                                        renderer_class)
+        if resolved == "wmchar":
+            post_text(target, text)
+            return resolved
+    if resolved == "paste":
         paste_text(text, restore_clipboard=restore_clipboard)
     else:
         type_text(text)
+    return resolved
 
 
 # ------------------------------------------------------------------- hooks
