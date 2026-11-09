@@ -97,8 +97,12 @@ GPU のない PC での既定エンジンです。Hugging Face の [`kizuna-inte
 
 ### 既存インストールの更新
 
+`update.bat` を実行するだけです（中身は `python tools/update.py`）。GitHub の最新版と比べて、更新があれば起動中のアプリを止め、コードを最新版にそろえ、`setup_env.py` の再実行（環境判定・`local_engine` の書き込み・必要なモデルのダウンロード）まで行い、アプリを再起動します。最新版なら何もしません。
+
+手作業で行う場合の等価な手順は次のとおりです。
+
 1. `git pull` で最新版を取得します
-2. `python tools/setup_env.py` を再実行します（環境判定をやり直し、`local_engine` を書き込み、必要なモデル——GPU なしの PC では Haas CPU モデル——をダウンロードします。他の設定は保持されます）
+2. `python tools/setup_env.py` を再実行します（他の設定は保持されます）
 3. アプリを再起動します（トレイの「終了」→ `run.bat`）
 
 ## 整形（formatter）
