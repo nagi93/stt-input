@@ -316,13 +316,30 @@ def paste_text(text: str, restore_clipboard: bool = True,
 
 
 def _type_unicode(text: str) -> None:
-    for ch in text:
-        code = ord(ch)
-        down = INPUT(INPUT_KEYBOARD, _INPUTUNION(ki=_KEYBDINPUT(
-            0, code, KEYEVENTF_UNICODE, 0, None)))
-        up = INPUT(INPUT_KEYBOARD, _INPUTUNION(ki=_KEYBDINPUT(
-            0, code, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, 0, None)))
-        _send_inputs([down, up])
+    """Type text as KEYEVENTF_UNICODE events, batched into one call.
+
+    Per-character SendInput calls were observed to arrive REORDERED
+    in WinUI apps (「タイプ」 became 「タプイ」); a single batched call
+    preserves order.  Iterates UTF-16 code units so surrogate pairs
+    (emoji) type correctly.
+    """
+    units = text.encode("utf-16-le")
+    events: list[INPUT] = []
+    for i in range(0, len(units), 2):
+        code = units[i] | (units[i + 1] << 8)
+        if code in (0x0D,):  # CR alone types nothing useful; use LF pair
+            continue
+        events.append(INPUT(INPUT_KEYBOARD, _INPUTUNION(ki=_KEYBDINPUT(
+            0, code, KEYEVENTF_UNICODE, 0, None))))
+        events.append(INPUT(INPUT_KEYBOARD, _INPUTUNION(ki=_KEYBDINPUT(
+            0, code, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, 0, None))))
+    for start in range(0, len(events), 512):
+        _send_inputs(events[start:start + 512])
+
+
+def type_text(text: str) -> None:
+    """Insert text at the caret by typing it (no clipboard involved)."""
+    _type_unicode(text)
 
 
 def _wait_for_focus(root: int, timeout: float = 0.9) -> bool:
@@ -369,8 +386,16 @@ def _wait_for_focus(root: int, timeout: float = 0.9) -> bool:
 
 
 def focus_and_paste(text: str, click_to_focus: bool = True,
-                    restore_clipboard: bool = True) -> None:
-    """Click the control under the cursor (if asked), then paste."""
+                    restore_clipboard: bool = True,
+                    method: str = "type") -> None:
+    """Click the control under the cursor (if asked), then insert text.
+
+    ``method="type"`` types the text as unicode key events;
+    ``method="paste"`` uses the clipboard + Ctrl+V.  Typing is the
+    default: on this machine's Win11 Notepad (RichEditD2DPT) and in
+    several WinUI apps, synthetic Ctrl+V and even WM_PASTE silently
+    do nothing while typed unicode lands (verified live 2026-11-09).
+    """
     if click_to_focus:
         x, y = get_cursor_pos()
         root = window_root_at(x, y)
@@ -383,7 +408,10 @@ def focus_and_paste(text: str, click_to_focus: bool = True,
         click_at_cursor()
         if root:
             _wait_for_focus(root)
-    paste_text(text, restore_clipboard=restore_clipboard)
+    if method == "paste":
+        paste_text(text, restore_clipboard=restore_clipboard)
+    else:
+        type_text(text)
 
 
 # ------------------------------------------------------------------- hooks

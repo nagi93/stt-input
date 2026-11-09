@@ -298,7 +298,8 @@ class VoicePasteApp:
             self.overlay.hide()
             try:
                 focus_and_paste(text, click_to_focus=self.cfg.click_to_focus,
-                                restore_clipboard=self.cfg.restore_clipboard)
+                                restore_clipboard=self.cfg.restore_clipboard,
+                                method=self.cfg.insert_method)
             except Exception as exc:
                 log_error("paste", exc)
                 self.overlay.show_result("⚠ 貼り付けに失敗しました", 1.4)

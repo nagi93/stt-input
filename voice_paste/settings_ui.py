@@ -31,7 +31,7 @@ EDITABLE_FIELDS = [
     "whisper_model", "whisper_device", "whisper_compute",
     "partial_interval_seconds", "min_press_ms", "max_seconds",
     "remove_fillers", "voice_commands", "aggressive_commands",
-    "click_to_focus", "restore_clipboard",
+    "click_to_focus", "restore_clipboard", "insert_method",
     "polish_enabled", "polish_base_url", "polish_model",
 ]
 
@@ -51,6 +51,8 @@ def validate(values: dict) -> list[str]:
         errors.append("サーバー接続方式の値が不正です。")
     if values["trigger"] not in ("xbutton1", "xbutton2", "both"):
         errors.append("トリガーボタンの値が不正です。")
+    if values["insert_method"] not in ("type", "paste"):
+        errors.append("入力方式の値が不正です。")
     if values["whisper_model"] not in MODELS:
         errors.append("モデルの値が不正です。")
     if values["whisper_device"] not in DEVICES:
@@ -239,6 +241,16 @@ def open_settings(root, cfg: Config, app, hook) -> None:
                         variable=var(key, "bool", current[key])).grid(
             row=r, column=0, columnspan=2, sticky="w", padx=10, pady=3)
         r += 1
+    grid_row(tab, r, "入力方式",
+             ttk.Combobox(tab, width=16, state="readonly",
+                          values=["type", "paste"],
+                          textvariable=var("insert_method", "str",
+                                           current["insert_method"])))
+    r += 1
+    ttk.Label(tab, text="type=キー入力として打つ（確実）／ paste=Ctrl+Vで貼る",
+              foreground="#666").grid(row=r, column=0, columnspan=2,
+                                      sticky="w", padx=10)
+    r += 1
     grid_row(tab, r, "LLMエンドポイント",
              ttk.Entry(tab, width=34,
                        textvariable=var("polish_base_url", "str",

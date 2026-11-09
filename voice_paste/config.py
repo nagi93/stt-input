@@ -50,6 +50,7 @@ class Config:
     # What happens on release
     click_to_focus: bool = True  # click the control under the cursor first
     restore_clipboard: bool = True
+    insert_method: str = "type"  # "type" (unicode typing) or "paste" (Ctrl+V)
 
     # Formatter
     remove_fillers: bool = True
