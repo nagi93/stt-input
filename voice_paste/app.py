@@ -6,7 +6,9 @@ Engines:
 * ``haas`` (default when the server exists): an external Haas-ja +
   RE-USE STT server (WebSocket streaming + batch fallback).  A health
   monitor switches sessions to the local engine while it is down.
-* ``local``: faster-whisper runs on this PC — no WSL, no server.
+* ``local``: recognition runs on this PC — no WSL, no server.  The
+  local engine is faster-whisper with an NVIDIA GPU, otherwise the
+  Haas-ja ONNX port on CPU (``local_engine`` overrides).
   While recording, a partial thread re-transcribes the audio captured
   so far about once a second and shows it in the overlay
   (LocalAgreement-stabilised); on release the full recording is
@@ -29,9 +31,23 @@ from pathlib import Path
 from . import formatter, polish
 from .audio import Recorder
 from .config import APP_DIR, Config
+from .haas_cpu_stt import HaasCpuEngine
 from .local_stt import LocalAgreement, LocalEngine, LocalSttError
 from .logutil import log_error, log_event
 from .stt_client import StreamClient, SttClient, SttError
+
+
+def build_local_engine(cfg: Config,
+                       models_dir: Path) -> LocalEngine | HaasCpuEngine:
+    """The local engine for this PC: Whisper with a GPU, Haas CPU without."""
+    from .env_detect import detect
+
+    has_cuda = detect().gpu_name is not None
+    if cfg.resolved_local_kind(has_cuda) == "whisper":
+        model, device, compute = cfg.resolved_model()
+        return LocalEngine(model, device, compute, models_dir)
+    return HaasCpuEngine(models_dir / "haas-onnx", cfg.haas_cpu_format,
+                         cfg.haas_cpu_threads)
 
 
 class VoicePasteApp:
@@ -47,7 +63,7 @@ class VoicePasteApp:
         self._pressed_at = 0.0
         self._cancelled = False
 
-        self.local: LocalEngine | None = None
+        self.local: LocalEngine | HaasCpuEngine | None = None
         self.batch: SttClient | None = None
         self.stream: StreamClient | None = None
         self._streaming_live = False
@@ -67,9 +83,7 @@ class VoicePasteApp:
         self.batch = None
         self.stream = None
         if cfg.engine == "local" or cfg.fallback_to_local:
-            model, device, compute = cfg.resolved_model()
-            self.local = LocalEngine(model, device, compute,
-                                     Path(APP_DIR) / "models")
+            self.local = build_local_engine(cfg, Path(APP_DIR) / "models")
             if cfg.engine == "local":
                 self.local.warm_async()  # load while the user looks at the screen
         if cfg.engine == "haas":

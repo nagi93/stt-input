@@ -18,8 +18,11 @@ from .config import Config, save_config
 ENGINE_FIELDS = {
     "engine", "fallback_to_local", "stt_url", "stt_transport",
     "streaming", "whisper_model", "whisper_device", "whisper_compute",
+    "local_engine", "haas_cpu_format",
 }
 
+LOCAL_ENGINES = ["auto", "whisper", "haas-cpu"]
+HAAS_CPU_FORMATS = ["int4-onecomp", "int8", "fp32"]
 MODELS = ["auto", "large-v3-turbo", "large-v3", "medium", "small", "base"]
 DEVICES = ["auto", "cuda", "cpu"]
 COMPUTES = ["auto", "float16", "int8_float16", "int8"]
@@ -28,6 +31,7 @@ TRANSPORTS = ["auto", "direct", "wsl"]
 EDITABLE_FIELDS = [
     "engine", "stt_url", "stt_transport", "streaming", "fallback_to_local",
     "mic_name", "trigger", "suppress_trigger",
+    "local_engine", "haas_cpu_format",
     "whisper_model", "whisper_device", "whisper_compute",
     "partial_interval_seconds", "min_press_ms", "max_seconds",
     "remove_fillers", "voice_commands", "aggressive_commands",
@@ -53,6 +57,10 @@ def validate(values: dict) -> list[str]:
         errors.append("トリガーボタンの値が不正です。")
     if values["insert_method"] not in ("auto", "type", "paste", "wmchar"):
         errors.append("入力方式の値が不正です。")
+    if values["local_engine"] not in LOCAL_ENGINES:
+        errors.append("ローカルエンジンの値が不正です。")
+    if values["haas_cpu_format"] not in HAAS_CPU_FORMATS:
+        errors.append("Haas CPU 形式の値が不正です。")
     if values["whisper_model"] not in MODELS:
         errors.append("モデルの値が不正です。")
     if values["whisper_device"] not in DEVICES:
@@ -193,6 +201,8 @@ def open_settings(root, cfg: Config, app, hook) -> None:
     notebook.add(tab, text="認識")
     r = 0
     for key, label, values in (
+            ("local_engine", "ローカルエンジン", LOCAL_ENGINES),
+            ("haas_cpu_format", "Haas CPU 形式", HAAS_CPU_FORMATS),
             ("whisper_model", "ローカルモデル", MODELS),
             ("whisper_device", "実行デバイス", DEVICES),
             ("whisper_compute", "計算精度", COMPUTES)):

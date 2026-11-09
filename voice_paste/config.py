@@ -26,8 +26,8 @@ class Config:
     max_seconds: float = 120.0
 
     # Recognition engine: "haas" (an external Haas-ja STT server — the
-    # default when that server exists) or "local" (faster-whisper on
-    # this PC, no server).  The installer writes "haas" when the server
+    # default when that server exists) or "local" (recognition on this
+    # PC, no server; which local engine is chosen by local_engine below).  The installer writes "haas" when the server
     # answers at install time, "local" otherwise.
     engine: str = "haas"
     # With engine="haas", fall back to the local engine when the server
@@ -35,7 +35,15 @@ class Config:
     # again as a last resort if the server path errors).  The overlay
     # notes when a dictation was recognised locally.
     fallback_to_local: bool = True
-    # Local engine model. "auto" = chosen from the detected hardware at
+    # Which local engine: "whisper" (faster-whisper) or "haas-cpu" (the
+    # Haas-ja ONNX port, CPU only).  "auto" = Whisper when this PC has
+    # an NVIDIA GPU (resolved whisper device is cuda), Haas CPU
+    # otherwise: on a CPU-only PC the ONNX model is the better default.
+    # The installer writes the concrete choice.
+    local_engine: str = "auto"
+    haas_cpu_format: str = "int4-onecomp"  # int4-onecomp | int8 | fp32
+    haas_cpu_threads: int = 4
+    # Whisper model (local_engine="whisper"). "auto" = chosen from the detected hardware at
     # first run (see env_detect); the installer writes concrete values.
     whisper_model: str = "auto"
     whisper_device: str = "auto"   # auto | cuda | cpu
@@ -91,6 +99,12 @@ class Config:
             choice.device if self.whisper_device == "auto" else self.whisper_device,
             choice.compute_type if self.whisper_compute == "auto" else self.whisper_compute,
         )
+
+    def resolved_local_kind(self, has_cuda: bool) -> str:
+        """"whisper" or "haas-cpu"; an explicit local_engine wins."""
+        if self.local_engine in ("whisper", "haas-cpu"):
+            return self.local_engine
+        return "whisper" if has_cuda else "haas-cpu"
 
 
 def load_config(path: Path | None = None) -> Config:

@@ -10,6 +10,11 @@ choices are written into config.json (preserving other settings), and
 the local model is pre-downloaded so the first dictation — or the first
 fallback — is not spent waiting.
 
+The local engine follows the final whisper device: Whisper with CUDA,
+otherwise the Haas-ja ONNX port on CPU (downloaded into
+models/haas-onnx with its dependencies, then smoke-loaded).  Re-running
+this script is also the update path for existing installs.
+
 Usage:  python tools/setup_env.py [--no-download]
 """
 from __future__ import annotations
@@ -27,6 +32,8 @@ from voice_paste.env_detect import detect, select_model  # noqa: E402
 
 CUDA_PACKAGES = ["nvidia-cublas-cu12", "nvidia-cudnn-cu12"]
 DEFAULT_STT_URL = "http://127.0.0.1:8790"
+HAAS_ONNX_REPO = "kizuna-intelligence/Haas-ja-v1.0-OneCompression-ONNX"
+HAAS_ONNX_DIR = APP_DIR / "models" / "haas-onnx"
 
 
 def haas_reachable(url: str, timeout: float = 3.0) -> bool:
@@ -70,8 +77,13 @@ def main() -> int:
     print(f"Haasサーバー ({stt_url}): "
           + ("応答あり → 既定エンジン=haas (ローカルは予備)"
              if engine == "haas" else "応答なし → 既定エンジン=local"))
+    # GPU (usable CUDA) -> Whisper; CPU only -> the Haas ONNX port.
+    local_kind = "whisper" if choice.device == "cuda" else "haas-cpu"
+    print(f"ローカルエンジン: {local_kind}")
     config.update({
         "engine": engine,
+        "local_engine": local_kind,
+        "haas_cpu_format": config.get("haas_cpu_format", "int4-onecomp"),
         "whisper_model": choice.model,
         "whisper_device": choice.device,
         "whisper_compute": choice.compute_type,
@@ -79,9 +91,12 @@ def main() -> int:
     config_path.write_text(
         json.dumps(config, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8")
-    print(f"config.json に書き込みました: engine={engine} model={choice.model} "
+    print(f"config.json に書き込みました: engine={engine} "
+          f"local_engine={local_kind} model={choice.model} "
           f"device={choice.device} compute={choice.compute_type}")
 
+    if download and local_kind == "haas-cpu":
+        return setup_haas_cpu(config["haas_cpu_format"])
     if download:
         print("モデルをダウンロードします (初回のみ、回線により数分)...")
         from voice_paste.local_stt import LocalEngine
@@ -97,6 +112,49 @@ def main() -> int:
                 json.dumps(config, ensure_ascii=False, indent=2,
                            sort_keys=True) + "\n", encoding="utf-8")
         print("モデルの準備ができました。")
+    return 0
+
+
+def setup_haas_cpu(fmt: str) -> int:
+    """Download the Haas-ja ONNX bundle, install its deps, smoke-load it."""
+    print("Haas CPU (ONNX) モデルをダウンロードします (初回のみ、回線により数分)...")
+    done = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "huggingface_hub"])
+    if done.returncode != 0:
+        print("huggingface_hub のインストールに失敗しました。", file=sys.stderr)
+        return 1
+    from huggingface_hub import snapshot_download
+
+    try:
+        snapshot_download(HAAS_ONNX_REPO, local_dir=str(HAAS_ONNX_DIR))
+    except Exception as err:
+        print(f"Haas CPU モデルのダウンロードに失敗しました: {err}",
+              file=sys.stderr)
+        return 1
+
+    print("Haas CPU の依存パッケージをインストールします...")
+    done = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "-r",
+         str(HAAS_ONNX_DIR / "requirements.txt")])
+    if done.returncode != 0:
+        print("Haas CPU の依存パッケージのインストールに失敗しました。",
+              file=sys.stderr)
+        return 1
+
+    # Smoke load in a fresh interpreter in UTF-8 mode, as the app runs it.
+    print("Haas CPU モデルの読み込みを確認します...")
+    smoke = (
+        "import sys\n"
+        f"sys.path.insert(0, {str(APP_DIR)!r})\n"
+        "from voice_paste.haas_cpu_stt import HaasCpuEngine\n"
+        f"HaasCpuEngine({str(HAAS_ONNX_DIR)!r}, {fmt!r})"
+        ".ensure_loaded(timeout=600)\n")
+    done = subprocess.run([sys.executable, "-X", "utf8", "-c", smoke])
+    if done.returncode != 0:
+        print("Haas CPU モデルの読み込みに失敗しました。上のエラーを確認して"
+              "ください。", file=sys.stderr)
+        return 1
+    print("Haas CPU モデルの準備ができました。")
     return 0
 
 

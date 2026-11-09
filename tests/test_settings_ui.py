@@ -41,3 +41,20 @@ def test_engine_fields_cover_rebuild_triggers():
         assert key in ENGINE_FIELDS
     assert "mic_name" not in ENGINE_FIELDS
     assert "remove_fillers" not in ENGINE_FIELDS
+
+
+def test_validate_local_engine_choices():
+    values = _valid_values()
+    for engine in ("auto", "whisper", "haas-cpu"):
+        values["local_engine"] = engine
+        assert validate(values) == []
+    for fmt in ("int4-onecomp", "int8", "fp32"):
+        values["haas_cpu_format"] = fmt
+        assert validate(values) == []
+    values["local_engine"] = "gpu"
+    values["haas_cpu_format"] = "int2"
+    assert len(validate(values)) == 2
+
+
+def test_local_engine_fields_rebuild_engine():
+    assert {"local_engine", "haas_cpu_format"} <= ENGINE_FIELDS

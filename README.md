@@ -8,7 +8,7 @@ Windows 常駐のプッシュ・トゥ・トーク音声入力アプリ。**マ�
 
 - **押している間だけ録音**（プッシュ・トゥ・トーク）。離した瞬間に、離した位置のウィンドウをクリックしてフォーカスし、テキストを入力します
 - カーソルに追従する小さなオーバーレイに、録音状態と**ライブ文字起こし**を表示
-- 認識は**ローカル実行が基本**（faster-whisper）。PC の GPU / RAM に合わせてモデルを自動選択するので、サーバーも WSL も不要です
+- 認識は**ローカル実行が基本**。NVIDIA GPU のある PC では faster-whisper、GPU のない PC では Haas-ja の ONNX 版（CPU 実行）を自動で選ぶので、サーバーも WSL も不要です
 - 任意で**外部 STT サーバー**にも接続可能。サーバーが落ちている間は自動でローカル認識に切り替わり、その旨をオーバーレイに表示します（黙って切り替わることはありません）
 - 整形はルールベースで高速（フィラー除去、音声コマンド、句読点の正規化）。任意で LLM 整形も使えます（既定 OFF）
 - **ブラウザの Web エディタでも文字化けしない**よう、入力先に応じてテキストの届け方を自動で切り替えます（後述）
@@ -37,6 +37,25 @@ Windows 常駐のプッシュ・トゥ・トーク音声入力アプリ。**マ�
 従来方式の「クリップボード + Ctrl+V」も `insert_method: "paste"` で選択できます。ただしアプリによっては、プログラムから送った Ctrl+V を受け付けないものがあります。
 
 ## 認識エンジン
+
+### ローカルエンジンの選択
+
+ローカル認識のエンジンは PC の GPU で決まります（`local_engine: "auto"`）。
+
+| 環境 | ローカルエンジン |
+|---|---|
+| NVIDIA GPU あり（CUDA で動作） | faster-whisper（下記のモデル自動選択） |
+| GPU なし | Haas CPU（Haas-ja の ONNX 版、CPU 実行） |
+
+インストーラーは判定結果を `local_engine` に `"whisper"` / `"haas-cpu"` として書き込みます。手動で切り替えることもできます（設定の「認識」タブ、または `config.json`）。
+
+### Haas CPU（ONNX）
+
+GPU のない PC での既定エンジンです。Hugging Face の [`kizuna-intelligence/Haas-ja-v1.0-OneCompression-ONNX`](https://huggingface.co/kizuna-intelligence/Haas-ja-v1.0-OneCompression-ONNX)（コミュニティによる Haas-ja の ONNX 移植）を `models/haas-onnx/` にダウンロードして使います。
+
+- 形式は `haas_cpu_format` で `int4-onecomp`（既定・最小）/ `int8` / `fp32` から選べます
+- このモデルは Python の UTF-8 モードが必要です。アプリは必要な場合に自動で UTF-8 モード（`PYTHONUTF8=1`）で再起動します
+- 25 秒を超える発話は自動で分割して認識します
 
 ### ローカル認識（faster-whisper）
 
@@ -76,6 +95,12 @@ Windows 常駐のプッシュ・トゥ・トーク音声入力アプリ。**マ�
 2. `install.bat` を実行します。依存導入 → 環境判定とモデル選択 → モデルの事前ダウンロード → スタートアップ登録まで一括で行います
 3. 起動は次回ログインから自動です。手動起動は `run.bat`
 
+### 既存インストールの更新
+
+1. `git pull` で最新版を取得します
+2. `python tools/setup_env.py` を再実行します（環境判定をやり直し、`local_engine` を書き込み、必要なモデル——GPU なしの PC では Haas CPU モデル——をダウンロードします。他の設定は保持されます）
+3. アプリを再起動します（トレイの「終了」→ `run.bat`）
+
 ## 整形（formatter）
 
 速さを優先し、既定ではルールベース整形のみ（ネットワーク待ちなし）。
@@ -103,6 +128,9 @@ Windows 常駐のプッシュ・トゥ・トーク音声入力アプリ。**マ�
 | `stt_url` | `http://127.0.0.1:8790` | 外部 STT サーバーの URL |
 | `stt_transport` | `auto` | `auto` / `direct` / `wsl` |
 | `streaming` | `true` | サーバー使用時に WebSocket ストリーミングを使う |
+| `local_engine` | `auto` | `auto`（GPU あり→`whisper`、なし→`haas-cpu`）/ `whisper` / `haas-cpu`。インストーラーが具体値を書き込み |
+| `haas_cpu_format` | `int4-onecomp` | Haas CPU のモデル形式：`int4-onecomp` / `int8` / `fp32` |
+| `haas_cpu_threads` | `4` | Haas CPU の推論スレッド数 |
 | `whisper_model` | `auto` | モデル名 or `auto`（環境判定） |
 | `whisper_device` | `auto` | `cuda` / `cpu` / `auto` |
 | `whisper_compute` | `auto` | `float16` / `int8_float16` / `int8` / `auto` |
@@ -131,6 +159,7 @@ tools/setup_env.py       環境判定 → モデル選択 → CUDA 導入 → co
 voice_paste/
   app.py                 状態機械（押下 → 録音 → 確定 → 整形 → 入力）
   local_stt.py           faster-whisper ローカル認識 + LocalAgreement
+  haas_cpu_stt.py        Haas-ja ONNX ローカル認識（GPU なしの PC 向け）
   env_detect.py          GPU / VRAM / RAM / CPU 検出とモデル選択
   stt_client.py          外部 STT サーバー用クライアント（任意エンジン）
   formatter.py           整形ルール

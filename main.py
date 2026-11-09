@@ -3,8 +3,9 @@
 
 Hold the mouse side button, speak, release: the formatted transcript is
 pasted into whatever is under the cursor.  Speech recognition runs
-locally with faster-whisper (the installer picks the model size from
-this PC's GPU/RAM); no WSL and no server are required.  An optional
+locally — faster-whisper on PCs with an NVIDIA GPU (the installer picks
+the model size from this PC's GPU/RAM), the Haas-ja ONNX port on CPU
+otherwise; no WSL and no server are required.  An optional
 engine can still use an external Haas-ja STT server (e.g. in WSL).
 
 Run:  pythonw main.py     (tray resident; close from the tray menu)
@@ -12,6 +13,7 @@ Run:  pythonw main.py     (tray resident; close from the tray menu)
 """
 from __future__ import annotations
 
+import os
 import sys
 import threading
 from pathlib import Path
@@ -34,6 +36,7 @@ def main() -> int:
     from voice_paste.win32_input import PushToTalkHook
 
     cfg = load_config()
+    _ensure_utf8_mode(cfg)
     root = tk.Tk()
     root.withdraw()  # only the overlay toplevel and the tray are visible
     root.title("Muse Voice Paste")
@@ -57,6 +60,34 @@ def main() -> int:
     _start_tray(root, app, hook, cfg)
     root.mainloop()
     return 0
+
+
+UTF8_RELAUNCH_ENV = "VOICE_PASTE_UTF8_RELAUNCH"
+
+
+def _ensure_utf8_mode(cfg) -> None:
+    """Re-exec in Python UTF-8 mode when the Haas CPU engine may be used.
+
+    The Haas ONNX bundle reads its UTF-8 files with the locale encoding,
+    which crashes on e.g. Japanese Windows (cp932).  PYTHONUTF8 only
+    takes effect at interpreter start, hence the relaunch.  The guard
+    variable prevents a loop: if UTF-8 mode is still off after one
+    relaunch, carry on — the engine reports a clear error if used.
+    """
+    if sys.platform != "win32" or sys.flags.utf8_mode:
+        return
+    if os.environ.get(UTF8_RELAUNCH_ENV):
+        return
+    if not (cfg.engine == "local" or cfg.fallback_to_local):
+        return
+    from voice_paste.env_detect import detect
+
+    has_cuda = detect().gpu_name is not None
+    if cfg.resolved_local_kind(has_cuda) != "haas-cpu":
+        return
+    os.environ["PYTHONUTF8"] = "1"
+    os.environ[UTF8_RELAUNCH_ENV] = "1"
+    os.execv(sys.executable, [sys.executable, *sys.argv])
 
 
 # ------------------------------------------------------------ tray settings
