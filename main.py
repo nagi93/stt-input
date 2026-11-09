@@ -5,7 +5,7 @@ Hold the mouse side button, speak, release: the formatted transcript is
 pasted into whatever is under the cursor.  Speech recognition runs
 locally with faster-whisper (the installer picks the model size from
 this PC's GPU/RAM); no WSL and no server are required.  An optional
-engine can still use the WSL Haas-ja server on siniku.
+engine can still use an external Haas-ja STT server (e.g. in WSL).
 
 Run:  pythonw main.py     (tray resident; close from the tray menu)
       python  main.py     (same, with a console for debugging)
@@ -60,7 +60,7 @@ def main() -> int:
 
 
 # ------------------------------------------------------------ tray settings
-from voice_paste.audio import input_device_names  # noqa: E402,F401  (re-export)
+from voice_paste.audio import input_device_names, mic_name_key  # noqa: E402,F401  (re-export)
 
 
 def apply_mic_choice(cfg, app, name: str, path=None) -> None:
@@ -114,12 +114,7 @@ def build_tray_menu(root, app, hook, cfg):
     for dev_name in input_device_names():
         # The stored value is a short unique substring of the device
         # name; the menu shows the full name.
-        key = dev_name
-        for known in ("AG06", "AG03"):
-            if known in dev_name:
-                key = known
-                break
-        mic_entries.append(mic_item(key, dev_name))
+        mic_entries.append(mic_item(mic_name_key(dev_name), dev_name))
 
     def trigger_item(value: str, label: str):
         def choose(icon, item):

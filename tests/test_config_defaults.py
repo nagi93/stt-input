@@ -1,4 +1,4 @@
-"""Defaults: Haas-first on siniku, local as the prepared fallback."""
+"""Defaults: server-first (Haas), local as the prepared fallback."""
 from voice_paste.config import Config
 
 

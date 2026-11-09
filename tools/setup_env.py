@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Environment-adaptive setup for stt-input.
 
-Probes the Haas STT server: when it answers (siniku), the app default
+Probes the external STT server: when it answers, the app default
 engine is "haas" with the local model as fallback; on PCs without the
 server the default is "local".  Either way, this PC's hardware selects
 the faster-whisper tier (see voice_paste/env_detect.py), the CUDA
